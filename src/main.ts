@@ -8,6 +8,23 @@ let provider: any = null, account: Address | null = null
 let viewAddr: Address | null = null
 let slip = Number(localStorage.getItem('slipBps') || 50)
 const positions = new Map<string, L.Position>()
+type Meta = { name: string | null; symbol: string | null; logo: string | null; logoSource: string | null; priceUsd: number | null; marketCap: number | null }
+const meta = new Map<string, Meta>()
+const ETH_LOGO = 'https://coin-images.coingecko.com/coins/images/279/large/ethereum.png'
+async function loadMeta(addrs: string[]) {
+  const need = [...new Set(addrs.map(a => a.toLowerCase()))].filter(a => a !== L.ZERO && !meta.has(a))
+  for (let i = 0; i < need.length; i += 30) {
+    try { const r = await fetch('/api/tokens?addresses=' + need.slice(i, i + 30).join(',')); const j = await r.json(); for (const k in j) meta.set(k, j[k]) } catch { }
+  }
+}
+function avatar(sym: string) {
+  const c = ['#2563eb', '#7c3aed', '#db2777', '#059669', '#d97706', '#0891b2'][[...sym].reduce((a, ch) => a + ch.charCodeAt(0), 0) % 6]
+  return 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><circle cx="20" cy="20" r="20" fill="${c}"/><text x="20" y="26" font-family="system-ui,sans-serif" font-size="16" font-weight="700" fill="#fff" text-anchor="middle">${esc((sym || '?').slice(0, 2).toUpperCase())}</text></svg>`)
+}
+const tk = (t: L.Token) => { const m = meta.get(t.address.toLowerCase()); return { name: m?.name || t.name, sym: (m?.symbol || t.symbol || '?'), logo: t.native ? ETH_LOGO : m?.logo || null, price: m?.priceUsd ?? null, mcap: m?.marketCap ?? null, src: m?.logoSource } }
+const logoImg = (t: L.Token, sz = 28) => { const x = tk(t), av = avatar(x.sym); return `<img class="tlogo" width="${sz}" height="${sz}" src="${esc(x.logo || av)}" data-av="${av}" onerror="this.onerror=null;this.src=this.dataset.av" alt="">` }
+const usd = (n: number | null) => n == null ? '—' : '$' + (n >= 1 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : n.toPrecision(4))
+
 
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c])
 const short = (a: string) => a.slice(0, 6) + '…' + a.slice(-4)
@@ -59,14 +76,14 @@ function shell() {
    <div class="row muted" style="margin-top:8px;justify-content:space-between"><span>Slippage</span><span><select id="slip" style="width:auto">${[10, 50, 100, 300, 500].map(b => `<option value="${b}" ${b === slip ? 'selected' : ''}>${b / 100}%</option>`).join('')}</select></span></div>
   </div><div id="list"></div>`
   $('#go').onclick = () => { const v = ($('#addr') as HTMLInputElement).value.trim(); if (!isAddress(v)) return toast('Not a valid address'); viewAddr = getAddress(v); history.replaceState(null, '', '?addr=' + viewAddr); load(viewAddr) }
-  $('#goid').onclick = async () => { const v = ($('#tid') as HTMLInputElement).value.trim(); if (!/^\d+$/.test(v)) return toast('Enter a numeric id'); try { const p = await L.loadPosition(BigInt(v)); positions.set(v, p); openDetail(p) } catch (e: any) { toast('Not found: ' + (e.shortMessage || e.message)) } }
+  $('#goid').onclick = async () => { const v = ($('#tid') as HTMLInputElement).value.trim(); if (!/^\d+$/.test(v)) return toast('Enter a numeric id'); try { const p = await L.loadPosition(BigInt(v)); positions.set(v, p); await loadMeta([p.t0.address, p.t1.address]); openDetail(p) } catch (e: any) { toast('Not found: ' + (e.shortMessage || e.message)) } }
   $('#slip').onchange = e => { slip = Number((e.target as HTMLSelectElement).value); localStorage.setItem('slipBps', String(slip)) }
 }
 function card(p: L.Position) {
   const inR = p.tick >= p.tickLower && p.tick < p.tickUpper
   const price = L.priceFromSqrt(p.sqrtPriceX96, p.t0.decimals, p.t1.decimals)
   return `<div class="card pcard" data-id="${p.tokenId}">
-   <div class="row" style="justify-content:space-between"><span class="pair">${esc(p.t0.symbol)} / ${esc(p.t1.symbol)}</span><span class="pill ${inR ? '' : 'out'}">${p.liquidity === 0n ? 'closed' : inR ? 'in range' : 'out of range'}</span></div>
+   <div class="row" style="justify-content:space-between"><span class="row"><span class="logos">${logoImg(p.t0)}${logoImg(p.t1)}</span><span class="pair">${esc(tk(p.t0).sym.toUpperCase())}/${esc(tk(p.t1).sym.toUpperCase())}</span></span><span class="pill ${inR ? '' : 'out'}">${p.liquidity === 0n ? 'closed' : inR ? 'in range' : 'out of range'}</span></div>
    <div class="muted">#${p.tokenId} · v4 · ${(p.key.fee / 10000).toFixed(2)}% · ${p.key.hooks === L.ZERO ? 'no hook' : 'hook ' + short(p.key.hooks)}</div>
    <div class="kv"><span>Amounts</span><span>${fmt(p.amount0, p.t0.decimals, 2)} ${esc(p.t0.symbol)} · ${fmt(p.amount1, p.t1.decimals, 4)} ${esc(p.t1.symbol)}</span></div>
    <div class="kv"><span>Unclaimed fees</span><span>${fmt(p.fees0, p.t0.decimals, 2)} ${esc(p.t0.symbol)} · ${fmt(p.fees1, p.t1.decimals)} ${esc(p.t1.symbol)}</span></div>
@@ -81,7 +98,9 @@ async function load(owner: Address) {
   const res = await Promise.allSettled(ids.map(id => L.loadPosition(id)))
   const ok = res.flatMap(r => r.status === 'fulfilled' ? [r.value] : []).sort((a, b) => Number(b.liquidity > 0n) - Number(a.liquidity > 0n))
   for (const p of ok) positions.set(String(p.tokenId), p)
-  list.innerHTML += ok.map(card).join('')
+  await loadMeta(ok.flatMap(p => [p.t0.address, p.t1.address]))
+  const bad = res.length - ok.length
+  list.innerHTML += ok.map(card).join('') + (bad ? `<p class="muted">${bad} position(s) failed to load. Pull to refresh or open by id.</p>` : '')
   list.querySelectorAll('.pcard').forEach(el => (el as HTMLElement).onclick = () => openDetail(positions.get((el as HTMLElement).dataset.id!)!))
 }
 
@@ -89,12 +108,13 @@ async function load(owner: Address) {
 function openSheet(title: string, html: string) { sheet.innerHTML = `<div class="top"><h2>${title}</h2><button class="b g" id="close">✕</button></div>${html}`; sheet.classList.remove('hidden'); $('#close').onclick = closeSheet }
 function closeSheet() { sheet.classList.add('hidden'); sheet.innerHTML = '' }
 function tokenBlock(t: L.Token, label: string, price: string) {
-  return `<div class="card"><div class="pair">${label}: ${esc(t.symbol)}</div>
-  <div class="kv"><span>Name</span><span>${esc(t.name)}</span></div>
+  return `<div class="card"><div class="row">${logoImg(t, 44)}<div><div class="pair">${esc(tk(t).sym.toUpperCase())}</div><div class="muted">${label} · ${esc(tk(t).name)}</div></div></div>
+  <div class="kv"><span>Name</span><span>${esc(tk(t).name)}</span></div><div class="kv"><span>Ticker</span><span>${esc(tk(t).sym)}</span></div>
+  <div class="kv"><span>Price (USD)</span><span>${usd(tk(t).price)}</span></div><div class="kv"><span>Market cap</span><span>${usd(tk(t).mcap)}</span></div>
   <div class="kv"><span>Address</span><span>${t.native ? 'native ETH' : addrLink(t.address, t.address)}</span></div>
   <div class="kv"><span>Decimals</span><span>${t.decimals}</span></div>
   ${t.native ? '' : `<div class="kv"><span>Total supply</span><span>${fmt(t.totalSupply, t.decimals, 2)}</span></div>`}
-  <div class="kv"><span>Price</span><span>${price}</span></div>
+  <div class="kv"><span>Pool price</span><span>${price}</span></div>
   ${t.native ? '' : `<div class="kv"><span>Links</span><span>${addrLink(t.address, 'BaseScan')} · <a target="_blank" href="https://dexscreener.com/base/${t.address}">DexScreener</a></span></div>`}</div>`
 }
 function openDetail(p: L.Position) {
@@ -103,7 +123,7 @@ function openDetail(p: L.Position) {
   const full = p.tickLower <= -887000 && p.tickUpper >= 887000
   const share = p.poolLiquidity ? Number(p.liquidity * 10000n / p.poolLiquidity) / 100 : 0
   const mine = account && account.toLowerCase() === p.owner.toLowerCase()
-  openSheet(`${esc(p.t0.symbol)} / ${esc(p.t1.symbol)} #${p.tokenId}`, `
+  openSheet(`<span class="row"><span class="logos">${logoImg(p.t0)}${logoImg(p.t1)}</span>${esc(tk(p.t0).sym.toUpperCase())}/${esc(tk(p.t1).sym.toUpperCase())} <span class="muted">#${p.tokenId}</span></span>`, `
   <div class="card">
    <div class="kv"><span>Owner</span><span>${addrLink(p.owner)}${mine ? ' (you)' : ''}</span></div>
    <div class="kv"><span>Position NFT</span><span><a target="_blank" href="${L.SCAN}/nft/${L.PM}/${p.tokenId}">BaseScan</a> · <a target="_blank" href="https://app.uniswap.org/positions/v4/base/${p.tokenId}">Uniswap</a></span></div>
@@ -180,4 +200,4 @@ shell(); setBtn()
 const q = new URLSearchParams(location.search).get('addr')
 if (q && isAddress(q)) { viewAddr = getAddress(q); (document.getElementById('addr') as HTMLInputElement).value = viewAddr; load(viewAddr) }
 const qid = new URLSearchParams(location.search).get('id')
-if (qid && /^\d+$/.test(qid)) L.loadPosition(BigInt(qid)).then(p => { positions.set(qid, p); openDetail(p) }).catch(() => toast('Position not found'))
+if (qid && /^\d+$/.test(qid)) L.loadPosition(BigInt(qid)).then(async p => { positions.set(qid, p); await loadMeta([p.t0.address, p.t1.address]); openDetail(p) }).catch(() => toast('Position not found'))

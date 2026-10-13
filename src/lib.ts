@@ -8,7 +8,7 @@ export const ZERO: Address = '0x0000000000000000000000000000000000000000'
 export const SCAN = 'https://basescan.org'
 
 const RPC_URL = (globalThis as any).LP_RPC_URL || '/api/rpc'
-export const client = createPublicClient({ chain: base, transport: http(RPC_URL, { batch: true }) })
+export const client = createPublicClient({ chain: base, transport: http(RPC_URL, { batch: { batchSize: 40 }, retryCount: 2 }) })
 
 export const pmAbi = parseAbi([
   'function getPoolAndPositionInfo(uint256 tokenId) view returns ((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey, uint256 info)',

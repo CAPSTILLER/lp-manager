@@ -1,3 +1,4 @@
+// NOTE: no spamConfidenceLevel / excludeFilters — Alchemy flags v4 positions as spam; never filter them.
 // Lists Uniswap v4 position NFTs (PositionManager on Base) for an owner via Alchemy NFT API.
 const PM = '0x7C5f5A4bBd8fD63184577525326123B519429bDc';
 export default async function handler(req, res) {
