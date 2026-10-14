@@ -17,3 +17,4 @@ a{color:#7fb0ff}.sheet{position:fixed;inset:0;background:#0b1020;overflow:auto;z
 #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:#1a2445;color:#fff;padding:10px 14px;border-radius:10px;font-size:13px;max-width:92vw;display:none;z-index:20}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}input[type=range]{padding:0}code{font-size:11px;word-break:break-all;color:#9fb3e6}
 .tlogo{border-radius:50%;background:#1a2445;object-fit:cover;flex:none}.logos{display:inline-flex;margin-right:8px}.logos .tlogo+.tlogo{margin-left:-9px;box-shadow:0 0 0 2px #121a33}
+.hidden{display:none!important}.tabs button:disabled{opacity:.4}

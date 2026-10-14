@@ -1,6 +1,7 @@
 import { createCoinbaseWalletSDK } from '@coinbase/wallet-sdk'
 import { formatUnits, parseUnits, isAddress, getAddress, type Address, type Hex } from 'viem'
 import * as L from './lib'
+import * as AE from './aero'
 
 const $ = (s: string) => document.querySelector(s) as HTMLElement
 const app = $('#app'), sheet = $('#sheet'), btn = $('#connect') as HTMLButtonElement
@@ -23,7 +24,7 @@ function avatar(sym: string) {
 }
 const tk = (t: L.Token) => { const m = meta.get(t.address.toLowerCase()); return { name: m?.name || t.name, sym: (m?.symbol || t.symbol || '?'), logo: t.native ? ETH_LOGO : m?.logo || null, price: m?.priceUsd ?? null, mcap: m?.marketCap ?? null, src: m?.logoSource } }
 const logoImg = (t: L.Token, sz = 28) => { const x = tk(t), av = avatar(x.sym); return `<img class="tlogo" width="${sz}" height="${sz}" src="${esc(x.logo || av)}" data-av="${av}" onerror="this.onerror=null;this.src=this.dataset.av" alt="">` }
-const usd = (n: number | null) => n == null ? '—' : '$' + (n >= 1 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : n.toPrecision(4))
+const usd = (n: number | null) => n == null ? '—' : n === 0 ? '$0' : '$' + (n >= 1 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : n.toPrecision(4))
 
 
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c])
@@ -34,7 +35,7 @@ const addrLink = (a: string, label?: string) => `<a href="${L.SCAN}/address/${a}
 function toast(m: string, ms = 3500) { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout((t as any)._h); (t as any)._h = setTimeout(() => t.style.display = 'none', ms) }
 
 // ---------- wallet ----------
-function setBtn() { btn.textContent = account ? short(account) : 'Connect wallet'; btn.classList.toggle('on', !!account) }
+function setBtn() { if (!$('#locks').classList.contains('hidden')) loadLocks(); btn.textContent = account ? short(account) : 'Connect wallet'; btn.classList.toggle('on', !!account) }
 async function useProvider(p: any) {
   const accs: string[] = await p.request({ method: 'eth_requestAccounts' })
   try { await p.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x2105' }] }) } catch { }
@@ -74,7 +75,13 @@ function shell() {
    <div class="row" style="margin-top:8px"><input id="addr" placeholder="0x… wallet address"><button class="b" id="go">View</button></div>
    <div class="row" style="margin-top:8px"><input id="tid" placeholder="or position NFT id, e.g. 755630" inputmode="numeric"><button class="b g" id="goid">Open</button></div>
    <div class="row muted" style="margin-top:8px;justify-content:space-between"><span>Slippage</span><span><select id="slip" style="width:auto">${[10, 50, 100, 300, 500].map(b => `<option value="${b}" ${b === slip ? 'selected' : ''}>${b / 100}%</option>`).join('')}</select></span></div>
-  </div><div id="list"></div>`
+  </div>
+  <div class="tabs" id="maintabs"><button class="b act" data-v="pos">LP positions</button><button class="b g" data-v="locks">Aerodrome locks</button></div>
+  <div id="list"></div><div id="locks" class="hidden"></div>`
+  document.querySelectorAll('#maintabs button').forEach(b => (b as HTMLElement).onclick = () => {
+    document.querySelectorAll('#maintabs button').forEach(x => { x.classList.remove('act'); x.classList.add('g') }); b.classList.add('act'); b.classList.remove('g')
+    const v = (b as HTMLElement).dataset.v; $('#list').classList.toggle('hidden', v !== 'pos'); $('#locks').classList.toggle('hidden', v !== 'locks'); if (v === 'locks') loadLocks()
+  })
   $('#go').onclick = () => { const v = ($('#addr') as HTMLInputElement).value.trim(); if (!isAddress(v)) return toast('Not a valid address'); viewAddr = getAddress(v); history.replaceState(null, '', '?addr=' + viewAddr); load(viewAddr) }
   $('#goid').onclick = async () => { const v = ($('#tid') as HTMLInputElement).value.trim(); if (!/^\d+$/.test(v)) return toast('Enter a numeric id'); try { const p = await L.loadPosition(BigInt(v)); positions.set(v, p); await loadMeta([p.t0.address, p.t1.address]); openDetail(p) } catch (e: any) { toast('Not found: ' + (e.shortMessage || e.message)) } }
   $('#slip').onchange = e => { slip = Number((e.target as HTMLSelectElement).value); localStorage.setItem('slipBps', String(slip)) }
@@ -196,8 +203,95 @@ function renderAction(p: L.Position, t: string) {
   }
 }
 
+// ---------- Aerodrome locks ----------
+const locks = new Map<string, AE.Lock>()
+const md = (a: string) => meta.get(a.toLowerCase())
+const dec = (a: string) => (md(a) as any)?.decimals ?? 18
+const symOf = (a: string) => md(a)?.symbol || short(a)
+const amtStr = (x: AE.Amt[]) => x.length ? x.map(a => `${fmt(a.amount, dec(a.token))} ${esc(symOf(a.token))}`).join('<br>') : '0'
+const usdOf = (x: AE.Amt[]) => x.reduce((s, a) => s + Number(formatUnits(a.amount, dec(a.token))) * (md(a.token)?.priceUsd || 0), 0)
+const dt = (t: number) => new Date(t * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+const lockTokens = (l: AE.Lock) => [AE.AERO, ...(l.relay ? [l.relay.token] : []), ...l.compoundedEarned.map(a => a.token), ...l.freeEarned.map(a => a.token), ...l.votes.flatMap(v => [...v.feeEarned, ...v.bribeEarned, ...v.estNext].map(a => a.token))]
+function lockAero(l: AE.Lock) { return l.managedId > 0n ? l.managedWeight : l.amount }
+function lockCard(l: AE.Lock) {
+  const st = l.managedId > 0n ? `Relay: ${esc(l.relay?.name || 'managed #' + l.managedId)}` : l.permanent ? 'Permanent lock' : l.end ? 'Unlocks ' + new Date(l.end * 1000).toLocaleDateString() : 'Expired'
+  return `<div class="card pcard lcard" data-id="${l.id}"><div class="row" style="justify-content:space-between"><span class="row"><span class="logos">${logoImg({ address: AE.AERO, symbol: 'AERO', name: 'Aerodrome', decimals: 18, totalSupply: 0n, native: false })}</span><span class="pair">veAERO #${l.id}</span></span><span class="pill">${l.escrowType === 2 ? 'managed' : l.managedId > 0n ? 'in relay' : 'normal'}</span></div>
+  <div class="muted">${st} · owner ${short(l.owner)}</div>
+  <div class="kv"><span>Locked</span><span>${fmt(lockAero(l), 18, 2)} AERO</span></div>
+  <div class="kv"><span>Voting power</span><span>${l.managedId > 0n ? 'via relay' : fmt(l.votingPower, 18, 2)}</span></div>
+  <div class="kv"><span>Claimable rebase</span><span>${fmt(l.rebase, 18, 4)} AERO</span></div></div>`
+}
+let locksBusy = false
+async function loadLocks() {
+  const box = $('#locks'); if (locksBusy) return; locksBusy = true
+  const wallets = [...new Set([...AE.DEFAULT_WALLETS, ...(account ? [account] : []), ...(viewAddr ? [viewAddr] : [])].map(a => getAddress(a)))]
+  box.innerHTML = `<div class="card"><div class="row"><input id="lid" placeholder="veAERO lock id" inputmode="numeric"><button class="b g" id="golid">Open</button></div>
+   <div class="muted" style="margin-top:6px">Checking ${wallets.map(w => addrLink(w)).join(', ')}</div></div><div id="lockl"><p class="muted">Loading locks…</p></div>`
+  $('#golid').onclick = async () => { const v = ($('#lid') as HTMLInputElement).value.trim(); if (!/^\d+$/.test(v)) return toast('Enter a lock id'); try { toast('Loading lock…'); await openLock(BigInt(v)) } catch (e: any) { toast('Lock not found') } }
+  try {
+    const ids = (await Promise.all(wallets.map(w => AE.lockIdsFor(w).catch(() => [])))).flat()
+    const ls = (await Promise.allSettled(ids.map(id => AE.loadLock(id)))).flatMap(r => r.status === 'fulfilled' ? [r.value] : [])
+    await loadMeta(ls.flatMap(lockTokens).concat(AE.AERO))
+    ls.forEach(l => locks.set(String(l.id), l))
+    $('#lockl').innerHTML = ls.length ? ls.map(lockCard).join('') : `<p class="muted">No veAERO locks held by these wallets. Open any lock by id above.</p>`
+    document.querySelectorAll('.lcard').forEach(el => (el as HTMLElement).onclick = () => openLock(BigInt((el as HTMLElement).dataset.id!)))
+  } finally { locksBusy = false }
+}
+async function openLock(id: bigint) {
+  let l = locks.get(String(id)); if (!l) { l = await AE.loadLock(id); locks.set(String(id), l) }
+  await loadMeta(lockTokens(l).concat(AE.AERO))
+  const aeroP = md(AE.AERO)?.priceUsd || 0, now = Date.now() / 1000
+  const claimFB = l.votes.reduce((s, v) => s + usdOf(v.feeEarned) + usdOf(v.bribeEarned), 0)
+  const estW = l.votes.reduce((s, v) => s + usdOf(v.estNext), 0) * (l.managedId > 0n ? l.managedShare / 100 : 1)
+  const lockedUsd = Number(formatUnits(lockAero(l), 18)) * aeroP
+  const apr = lockedUsd > 0 && estW > 0 ? (estW * 52 / lockedUsd * 100) : null
+  const mine = account && account.toLowerCase() === l.owner.toLowerCase()
+  const r = l.relay, nextComp = r ? (r.keeperLastRun % AE.WEEK) + l.epochEnd : 0
+  openSheet(`veAERO #${l.id}`, `
+  <div class="card">
+   <div class="kv"><span>Owner</span><span>${addrLink(l.owner)}${mine ? ' (you)' : ''}</span></div>
+   <div class="kv"><span>NFT</span><span><a target="_blank" href="${L.SCAN}/nft/${AE.VE}/${l.id}">BaseScan</a> · <a target="_blank" href="https://aerodrome.finance/lock/${l.id}">Aerodrome</a></span></div>
+   <div class="kv"><span>Type</span><span>${['Normal', 'Deposited in managed veNFT', 'Managed veNFT (relay)'][l.escrowType] || l.escrowType}</span></div>
+   <div class="kv"><span>Locked AERO</span><span>${fmt(lockAero(l), 18)} AERO${aeroP ? ` (${usd(lockedUsd)})` : ''}</span></div>
+   <div class="kv"><span>Unlock</span><span>${l.managedId > 0n ? 'Managed by relay' : l.permanent ? 'Permanent lock' : l.end ? dt(l.end) : '—'}</span></div>
+   <div class="kv"><span>Voting power</span><span>${l.managedId > 0n ? `via relay (${l.managedShare}% of relay)` : fmt(l.votingPower, 18)}</span></div>
+   <div class="kv"><span>Epoch</span><span>${dt(l.epochStart)} → ${dt(l.epochEnd)}<br><span class="muted">ends in ${((l.epochEnd - now) / 86400).toFixed(1)} days · voting closes 1h before</span></span></div>
+   <div class="kv"><span>Last voted</span><span>${l.lastVoted ? dt(l.lastVoted) : 'never'}</span></div>
+  </div>
+  ${l.managedId > 0n ? `<div class="card"><div class="pair">Relay / autoCompounder</div>
+   <div class="kv"><span>Relay</span><span>${r ? `${esc(r.name)}<br>${addrLink(r.address)}` : 'unknown'} · mNFT #${l.managedId}</span></div>
+   <div class="kv"><span>Compounds to</span><span>${r ? esc(symOf(r.token)) + (r.token.toLowerCase() === AE.AERO.toLowerCase() ? ' (auto-relocked into veAERO)' : ' (claimable, not relocked)') : '—'}</span></div>
+   <div class="kv"><span>Your deposit weight</span><span>${fmt(l.managedWeight, 18)} AERO</span></div>
+   <div class="kv"><span>Compounded so far</span><span>${amtStr(l.compoundedEarned)}</span></div>
+   ${l.freeEarned.length ? `<div class="kv"><span>Claimable (free rewards)</span><span>${amtStr(l.freeEarned)}</span></div>` : ''}
+   <div class="kv"><span>Last compounding</span><span>${r?.keeperLastRun ? dt(r.keeperLastRun) : '—'}</span></div>
+   <div class="kv"><span>Next compounding (estimate)</span><span>~${nextComp ? dt(nextComp) : '—'}</span></div></div>` : ''}
+  <div class="card"><div class="pair">Rewards</div>
+   <div class="kv"><span>Claimable rebase</span><span>${fmt(l.rebase, 18)} AERO</span></div>
+   <div class="kv"><span>Claimable fees + bribes</span><span>${usd(claimFB)}</span></div>
+   <div class="kv"><span>Next-epoch reward (ESTIMATE)</span><span>≈ ${usd(estW)}</span></div>
+   <div class="kv"><span>APR (ESTIMATE)</span><span>${apr == null ? '—' : '≈ ' + apr.toFixed(1) + '%'}</span></div>
+   <div class="muted">Estimates use this epoch's deposited fees/bribes (or last epoch's if none yet) × your share of each pool's votes, priced via DexScreener/GeckoTerminal. Excludes rebase. Not guaranteed.</div></div>
+  <h2>Votes ${l.managedId > 0n ? '(cast by the relay)' : ''}</h2>
+  ${l.votes.length ? l.votes.map(v => `<div class="card"><div class="pair">${esc(v.name)}</div>
+   <div class="kv"><span>Pool</span><span>${addrLink(v.pool)}</span></div>
+   <div class="kv"><span>Weight</span><span>${v.weightPct}% · ${fmt(v.votes, 18, 2)} votes (${v.poolSharePct}% of pool)</span></div>
+   <div class="kv"><span>Claimable fees</span><span>${amtStr(v.feeEarned)}</span></div>
+   <div class="kv"><span>Claimable bribes</span><span>${amtStr(v.bribeEarned)}</span></div>
+   <div class="kv"><span>Next epoch (ESTIMATE)</span><span>${amtStr(v.estNext)}</span></div></div>`).join('') : '<p class="muted">No active votes.</p>'}
+  <h2>Actions</h2><div class="muted">Simulate checks the claim against the current chain state and sends nothing.${mine ? ' Claim sends from your wallet.' : ''}</div>
+  <div class="tabs"><button class="b g" id="sim-reb" ${l.rebase ? '' : 'disabled'}>Simulate claim rebase</button><button class="b g" id="sim-fb" ${claimFB || l.votes.some(v => v.feeEarned.length || v.bribeEarned.length) ? '' : 'disabled'}>Simulate claim fees + bribes</button></div>
+  <div id="simout" class="muted"></div>`)
+  const out = (m: string) => { $('#simout').innerHTML += esc(m) + '<br>' }
+  $('#sim-reb').onclick = async () => { try { await L.simulate(l!.owner, AE.DIST, AE.claimRebaseCalldata(l!.id)); out('Rebase claim: simulation OK') } catch (e: any) { out('Rebase claim reverted: ' + (e.shortMessage || e.message)) } }
+  $('#sim-fb').onclick = async () => { const c = AE.claimFeesBribesCalldata(l!); for (const [k, d] of [['Fees', c.fees], ['Bribes', c.bribes]] as const) if (d) { try { await L.simulate(l!.owner, AE.VOTER, d); out(`${k} claim: simulation OK`) } catch (e: any) { out(`${k} claim reverted: ` + (e.shortMessage || e.message)) } } }
+}
+
 shell(); setBtn()
 const q = new URLSearchParams(location.search).get('addr')
 if (q && isAddress(q)) { viewAddr = getAddress(q); (document.getElementById('addr') as HTMLInputElement).value = viewAddr; load(viewAddr) }
+const qlock = new URLSearchParams(location.search).get('lock')
+if (qlock && /^\d+$/.test(qlock)) openLock(BigInt(qlock)).catch((e: any) => { console.error(e); toast('Lock not found: ' + (e.shortMessage || e.message)) })
 const qid = new URLSearchParams(location.search).get('id')
 if (qid && /^\d+$/.test(qid)) L.loadPosition(BigInt(qid)).then(async p => { positions.set(qid, p); await loadMeta([p.t0.address, p.t1.address]); openDetail(p) }).catch(() => toast('Position not found'))
+
