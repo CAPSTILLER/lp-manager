@@ -275,10 +275,11 @@ async function openLock(id: bigint) {
   <h2>Votes ${l.managedId > 0n ? '(cast by the relay)' : ''}</h2>
   ${l.votes.length ? l.votes.map(v => `<div class="card"><div class="pair">${esc(v.name)}</div>
    <div class="kv"><span>Pool</span><span>${addrLink(v.pool)}</span></div>
-   <div class="kv"><span>Weight</span><span>${v.weightPct}% · ${fmt(v.votes, 18, 2)} votes (${v.poolSharePct}% of pool)</span></div>
+   <div class="kv"><span>Weight${l.managedId > 0n ? ' (relay)' : ''}</span><span>${v.weightPct}% · ${fmt(v.votes, 18, 2)} votes (${v.poolSharePct}% of pool)</span></div>
    <div class="kv"><span>Claimable fees</span><span>${amtStr(v.feeEarned)}</span></div>
    <div class="kv"><span>Claimable bribes</span><span>${amtStr(v.bribeEarned)}</span></div>
-   <div class="kv"><span>Next epoch (ESTIMATE)</span><span>${amtStr(v.estNext)}</span></div></div>`).join('') : '<p class="muted">No active votes.</p>'}
+   <div class="kv"><span>Next epoch (ESTIMATE)${l.managedId > 0n ? ', whole relay' : ''}</span><span>${amtStr(v.estNext)}</span></div>
+   ${l.managedId > 0n ? `<div class="kv"><span>Your share of that (ESTIMATE, ${l.managedShare}%)</span><span>${amtStr(v.estNext.map(a => ({ token: a.token, amount: a.amount * BigInt(Math.round(l!.managedShare * 10000)) / 1000000n })))}</span></div><div class="muted">The relay claims these rewards and swaps them into ${esc(symOf(l.relay?.token || AE.AERO))}. You can't claim them yourself; you receive them as compounded ${esc(symOf(l.relay?.token || AE.AERO))}.</div>` : ''}</div>`).join('') : '<p class="muted">No active votes.</p>'}
   <h2>Actions</h2><div class="muted">Simulate checks the claim against the current chain state and sends nothing.${mine ? ' Claim sends from your wallet.' : ''}</div>
   <div class="tabs"><button class="b g" id="sim-reb" ${l.rebase ? '' : 'disabled'}>Simulate claim rebase</button><button class="b g" id="sim-fb" ${claimFB || l.votes.some(v => v.feeEarned.length || v.bribeEarned.length) ? '' : 'disabled'}>Simulate claim fees + bribes</button></div>
   <div id="simout" class="muted"></div>`)
